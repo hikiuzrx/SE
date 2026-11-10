@@ -108,7 +108,8 @@ static void run_p2(int p, int q)
         LOG_P2("prochain premier = " BOLD "%d" RESET " → déposé dans le tampon", next);
 
     deposit(next);
-    _exit(0);   /* ne pas vider les tampons herites de P1 */
+    fflush(stdout);
+    _exit(0);   /* _exit : ne pas vider f1, herite de P1 */
 }
 
 /*
@@ -135,6 +136,7 @@ static void run_p1(int p)
             count++;
         } else if (!p2) {
             LOG_P1("%d non divisible par %d → création de P2", x, p);
+            fflush(stdout);   /* sinon P2 herite des logs non affiches */
             p2 = fork();
             if (p2 == 0)
                 run_p2(p, x);
@@ -183,8 +185,6 @@ static void update_f(int n)
 
 int main(int argc, char *argv[])
 {
-    setvbuf(stdout, NULL, _IONBF, 0);   /* logs affiches en temps reel */
-
     int n = argc > 1 ? atoi(argv[1]) : 100;
     if (n < 2) {
         LOG_ERR("n doit être >= 2 (usage : %s n)", argv[0]);
@@ -214,6 +214,7 @@ int main(int argc, char *argv[])
         printf(YELLOW BOLD "\n━━━━━━━━ Itération %d · p = %d ━━━━━━━━\n" RESET, it, p);
         remove(F2);   /* eviter de reutiliser le f2 de l'iteration precedente */
 
+        fflush(stdout);   /* sinon P1 herite des logs non affiches */
         pid_t p1 = fork();
         if (p1 < 0) {
             LOG_ERR("échec de la création de P1");
