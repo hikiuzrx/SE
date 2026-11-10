@@ -3,23 +3,24 @@
  * Crible parallele des nombres premiers entre 2 et n.
  *
  * Synchronisation sans signaux :
- *   fork()     : P cree P1, P1 cree P2
- *   waitpid()  : P1 attend P2, P attend P1
- *   tampon partage (mmap) : P2 y depose le prochain nombre premier
- *   semaphore  : "plein" previent P que le tampon contient une valeur
+ *   fork()    : P cree P1, P1 cree P2
+ *   waitpid() : P1 attend P2, P attend P1
+ *   exit()    : P2 renvoie le prochain premier a P1 par son code de retour,
+ *               P1 le renvoie a son tour a P (0 = plus de premier)
+ *
+ * Un code de retour tient sur 8 bits (0..255), d'ou la limite n <= 65535 :
+ * un premier utile verifie p*p <= n, donc p <= 255.
  */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <fcntl.h>
-#include <semaphore.h>
-#include <sys/mman.h>
 #include <sys/wait.h>
 
 #define F  "f.txt"
 #define F1 "f1.txt"
 #define F2 "f2.txt"
+#define N_MAX 65535
 
 #define RESET   "\033[0m"
 #define BOLD    "\033[1m"
@@ -39,17 +40,6 @@
 #define LOG_P1(fmt, ...) LOG(GREEN,   "  P1  ", fmt, ##__VA_ARGS__)
 #define LOG_P2(fmt, ...) LOG(MAGENTA, "    P2", fmt, ##__VA_ARGS__)
 #define LOG_ERR(fmt, ...) LOG(RED,    "ERREUR", RED fmt RESET, ##__VA_ARGS__)
-
-/* Tampon partage entre P, P1 et P2 */
-static int *buffer;
-static sem_t *full;    /* tampon rempli (init 0) */
-
-/* Depose une valeur dans le tampon et previent P */
-static void deposit(int value)
-{
-    *buffer = value;
-    sem_post(full);
-}
 
 static FILE *open_file(const char *name, const char *mode)
 {
@@ -78,7 +68,7 @@ static void show_file(const char *name)
 
 /*
  * P2 : ecrit dans f2 les multiples de q, et cherche le prochain premier
- * (premier nombre > q divisible ni par p ni par q) qu'il envoie a P.
+ * (premier nombre > q divisible ni par p ni par q) qu'il renvoie a P1.
  */
 static void run_p2(int p, int q)
 {
@@ -103,18 +93,20 @@ static void run_p2(int p, int q)
     if (f2)
         fclose(f2);
 
-    LOG_P2("%d multiples de %d écrits dans %s", count, q, F2);
-    if (next)
-        LOG_P2("prochain premier = " BOLD "%d" RESET " → déposé dans le tampon", next);
+    if (next > 255)
+        next = 0;   /* next*next > N_MAX >= n : inutile */
 
-    deposit(next);
+    LOG_P2("%d multiples de %d écrits dans %s", count, q, F2);
+    LOG_P2("prochain premier = " BOLD "%d" RESET " → renvoyé à P1", next);
+
     fflush(stdout);
-    _exit(0);   /* _exit : ne pas vider f1, herite de P1 */
+    _exit(next);   /* _exit : ne pas vider f1, herite de P1 */
 }
 
 /*
  * P1 : ecrit dans f1 les multiples de p. Au premier nombre non divisible
  * par p, il cree P2 avec ce nombre, puis continue en parallele.
+ * Il attend P2 et renvoie a P le premier que P2 lui a renvoye.
  */
 static void run_p1(int p)
 {
@@ -123,7 +115,7 @@ static void run_p1(int p)
     FILE *f = open_file(F, "r");
     FILE *f1 = open_file(F1, "w");
     if (!f || !f1)
-        exit(1);
+        exit(0);   /* 0 : P s'arrete */
 
     pid_t p2 = 0;
     int x, count = 0;
@@ -148,14 +140,15 @@ static void run_p1(int p)
     fclose(f1);
 
     LOG_P1("%d multiples de %d écrits dans %s", count, p, F1);
+    int next = 0;   /* reste 0 si P2 n'a pas ete cree */
     if (p2 > 0) {
         LOG_P1("attend la fin de P2 (pid %d)", p2);
-        waitpid(p2, NULL, 0);
-        LOG_P1("P2 terminé, fin de P1");
-    } else {
-        deposit(0);   /* pas de P2 : debloquer P quand meme */
+        int status;
+        waitpid(p2, &status, 0);
+        next = WEXITSTATUS(status);
+        LOG_P1("P2 terminé, a renvoyé " BOLD "%d" RESET " → renvoyé à P", next);
     }
-    exit(0);
+    exit(next);
 }
 
 /* P : retire de f les nombres presents dans f1 et f2 */
@@ -186,17 +179,8 @@ static void update_f(int n)
 int main(int argc, char *argv[])
 {
     int n = argc > 1 ? atoi(argv[1]) : 100;
-    if (n < 2) {
-        LOG_ERR("n doit être >= 2 (usage : %s n)", argv[0]);
-        return 1;
-    }
-
-    /* tampon partage herite par fork, semaphore nomme supprime aussitot */
-    buffer = mmap(NULL, sizeof *buffer, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANON, -1, 0);
-    full = sem_open("/tp1_full", O_CREAT, 0600, 0);
-    sem_unlink("/tp1_full");
-    if (buffer == MAP_FAILED || full == SEM_FAILED) {
-        LOG_ERR("échec de la création du tampon ou du sémaphore");
+    if (n < 2 || n > N_MAX) {
+        LOG_ERR("n doit être entre 2 et %d (usage : %s n)", N_MAX, argv[0]);
         return 1;
     }
 
@@ -222,13 +206,12 @@ int main(int argc, char *argv[])
         }
         if (p1 == 0)
             run_p1(p);
-        LOG_P("P1 créé (pid %d), en attente du tampon…", p1);
+        LOG_P("P1 créé (pid %d), en attente de sa fin…", p1);
 
-        sem_wait(full);   /* bloque jusqu'au depot dans le tampon */
-        int next = *buffer;
-        LOG_P("lu dans le tampon : " BOLD "%d" RESET, next);
-        waitpid(p1, NULL, 0);
-        LOG_P("P1 et P2 terminés");
+        int status;
+        waitpid(p1, &status, 0);
+        int next = WEXITSTATUS(status);
+        LOG_P("P1 et P2 terminés, P1 a renvoyé " BOLD "%d" RESET, next);
 
         show_file(F1);
         show_file(F2);
