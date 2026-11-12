@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <math.h>
 
 #define F  "f.txt"
 #define F1 "f1.txt"
@@ -194,7 +195,8 @@ int main(int argc, char *argv[])
     LOG_P("%s initialisé avec 2..%d", F, n);
 
     int p = 2;
-    for (int it = 1; p && p * p <= n; it++) {
+    int limit = (int)sqrt(n);
+    for (int it = 1; p && p <= limit; it++) {
         printf(YELLOW BOLD "\n━━━━━━━━ Itération %d · p = %d ━━━━━━━━\n" RESET, it, p);
         remove(F2);   /* eviter de reutiliser le f2 de l'iteration precedente */
 

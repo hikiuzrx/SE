@@ -5,7 +5,7 @@ N = 100
 all: premiers
 
 premiers: premiers.c
-	$(CC) $(CFLAGS) -o premiers premiers.c
+	$(CC) $(CFLAGS) -o premiers premiers.c -lm
 
 run: premiers
 	./premiers $(N)
